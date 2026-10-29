@@ -38,6 +38,7 @@ button:focus-visible,select:focus-visible{outline:3px solid #d78140;outline-offs
 .figure-hotspot.selected{outline:2px solid #fff1ce;outline-offset:-3px;box-shadow:0 0 0 3px #bd5d3799}
 .place-label,.road-label,.rail-label{position:absolute;left:0;top:0;pointer-events:auto;border:1px solid #c8aa78;background:#fff8e9;box-shadow:0 2px 5px #3c2e2524;border-radius:7px;padding:6px 9px;white-space:nowrap;max-width:min(300px,85vw);font-size:var(--label-font);line-height:1.15;transform:translate(-50%,-50%);cursor:pointer;touch-action:none}
 .place-label{display:flex;align-items:center;gap:8px}
+.place-label,.road-label,.rail-label{will-change:transform;backface-visibility:hidden;transition:none}
 .place-label.planned{background:#173e30;color:#fff9e7;border:2px solid #fff4d5;min-height:46px;box-shadow:0 0 0 1px #173e30,0 3px 9px #17382c40;font-size:calc(var(--label-font) + 1px)}
 .label-copy{display:block;text-align:left}
 .label-subtitle{display:block;font-family:system-ui,sans-serif;font-size:10px;color:#6e604b;margin-top:3px;line-height:1.2}
@@ -269,6 +270,7 @@ const pointers=new Map(),labelItems=[],hotspots=[],routePaths=[];
 let width=atlas.clientWidth,height=atlas.clientHeight,scale=1,tx=0,ty=0;
 let view='route',category='all',selected=null,frame=0,suppressClickUntil=0;
 let drag=null,pinch=null,overview=true,currentVisit=null;
+let labelLayoutDirty=true,labelVisibilityDirty=true,cameraActive=false,cameraTimer=0;
 const clamp=(value,low,high)=>Math.max(low,Math.min(high,value));
 const screen=(x,y)=>({x:tx+x*scale,y:ty+y*scale});
 const optional=place=>!place.planned&&place.category!=='transport';
@@ -281,6 +283,21 @@ function svg(name,attributes){
   return node;
 }
 function requestLayout(){if(!frame)frame=requestAnimationFrame(()=>{frame=0;render();});}
+function invalidateLabels(){labelLayoutDirty=true;labelVisibilityDirty=true;requestLayout();}
+function cameraMotion(){
+  cameraActive=true;clearTimeout(cameraTimer);
+  cameraTimer=setTimeout(()=>{
+    if(moving()||pointers.size){cameraMotion();return;}
+    cameraActive=false;labelVisibilityDirty=true;requestLayout();
+  },180);
+}
+function registerLabel(type,data,node){
+  const connector=svg('g',{'data-label':data.id});
+  const line=svg('line',{class:data.planned?'planned-leader':''});connector.append(line);
+  const dot=type==='place'?svg('circle',{r:data.planned?4:2.5,fill:data.planned?'#bf5733':'#fff5df',stroke:'#fff4d8','stroke-width':1.5}):null;
+  if(dot)connector.append(dot);
+  leaders.append(connector);labelItems.push({type,data,node,connector,line,dot,visible:false});
+}
 
 function buildJourney(){
   for(const visit of itinerary){
@@ -319,7 +336,7 @@ function buildPlaces(){
       small.textContent=extra?'Tillval · inte i rutten':place.labelSubtitle||place.subtitle;copy.append(small);
     }
     label.append(copy);label.addEventListener('click',()=>{if(allowed(place))openCard('place',place);});labels.append(label);
-    labelItems.push({type:'place',data:place,node:label});
+    registerLabel('place',place,label);
   }
 }
 function buildRoutes(){
@@ -344,10 +361,11 @@ function buildRoutes(){
       button.setAttribute('aria-label',`${road.from} till ${road.to}: cirka ${road.km} kilometer, ${duration(road.minutes)} med bil`);
     }
     button.addEventListener('click',()=>openCard(train?'train':'road',road));labels.append(button);
-    labelItems.push({type:train?'train':'road',data:road,node:button});
+    registerLabel(train?'train':'road',road,button);
   }
 }
 function updateView(){
+  invalidateLabels();
   atlas.classList.toggle('route-view',view==='route');
   atlas.classList.toggle('explore-view',view==='explore');
   document.querySelectorAll('[data-view]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.view===view)));
@@ -389,12 +407,12 @@ function openCard(type,item,visit=null){
     $('card-description').textContent='Den gröna märkningen med nummer visar vår preliminära rutt: flygplatsen → Sigiriya → Adam’s Peak → Ella → Yala → flygplatsen. Välj Rutt + tillval för att visa andra utflykter. De ljusa, streckade etiketterna med plus ingår inte i rutten. De målade figurerna ligger kvar som bakgrund i båda vyerna.';
     $('card-note').textContent='Schematisk illustrationskarta, inte exakt navigering. Kilometer och körtider är ungefärliga förslag från OpenStreetMap/OSRM utan trafik eller pauser. Tåget från Hatton via Nanu Oya till Ella är ett förslag. Flyg, aktiviteter och tågbiljetter är inte bokningsbekräftade här.';
   }
-  card.hidden=false;card.scrollTop=0;updateJourney();requestLayout();
+  card.hidden=false;card.scrollTop=0;labelVisibilityDirty=true;updateJourney();requestLayout();
   $('live-status').textContent=`${$('card-status').textContent}. ${$('card-title').textContent}`;
   history.replaceState(null,'',`#${item.id}`);
 }
 function closeCard(){
-  selected=null;currentVisit=null;card.hidden=true;updateJourney();
+  selected=null;currentVisit=null;card.hidden=true;labelVisibilityDirty=true;updateJourney();
   if(location.hash)history.replaceState(null,'',location.pathname+location.search);
   requestLayout();
 }
@@ -403,8 +421,9 @@ $('about-map').addEventListener('click',()=>openCard('about',{id:'about',x:160,y
 
 function intersect(a,b,padding=4){return a.x<b.x+b.w+padding&&a.x+a.w+padding>b.x&&a.y<b.y+b.h+padding&&a.y+a.h+padding>b.y;}
 function elementRect(node){const r=node.getBoundingClientRect();return {x:r.left,y:r.top,w:r.width,h:r.height};}
-function fixedObstacles(){
-  return [...document.querySelectorAll('.map-title,.filters,.journey-strip,.explore-controls,.map-legend,.map-tools,.map-footnote,.place-card')]
+function fixedObstacles(includeCard=true){
+  const selector='.map-title,.filters,.journey-strip,.explore-controls,.map-legend,.map-tools,.map-footnote'+(includeCard?',.place-card':'');
+  return [...document.querySelectorAll(selector)]
     .filter(node=>!node.hidden).map(node=>{const r=elementRect(node);return {x:r.x-4,y:r.y-4,w:r.w+8,h:r.h+8};});
 }
 function mapViewport(){
@@ -425,51 +444,90 @@ function priority(item){
   if(item.type==='train')return 100;
   return item.data.category==='transport'?40:60;
 }
-function renderLabels(){
+function measureLabels(){
   const sizeKey=width<=700?'mobile':'desktop';
   const toMeasure=labelItems.filter(item=>item.sizeKey!==sizeKey);
   for(const item of toMeasure){item.node.hidden=false;item.node.style.visibility='hidden';}
   for(const item of toMeasure){const box=item.node.getBoundingClientRect();item.size={width:box.width,height:box.height};item.sizeKey=sizeKey;}
-  const occupied=fixedObstacles();leaders.replaceChildren();
+  return toMeasure.length>0;
+}
+function placeLabels(){
+  // Choose screen-space offsets only for a deliberate overview/view/size change.
+  // Never run this search during a pan, wheel event, or pinch release.
+  const occupied=fixedObstacles(false);
   for(const item of [...labelItems].sort((a,b)=>priority(b)-priority(a))){
-    const {type,data,node}=item,anchor=screen(data.x,data.y),isSelected=selected?.data.id===data.id;
-    node.classList.toggle('selected',isSelected);
-    const show=type!=='place'||allowed(data);
-    const station=type==='place'&&data.category==='transport';
-    if(!show||(station&&scale<.56&&!isSelected)||anchor.x<-80||anchor.x>width+80||anchor.y<-80||anchor.y>height+80){node.hidden=true;continue;}
+    const {type,data}=item,anchor=screen(data.x,data.y);
     const w=item.size.width,h=item.size.height;
     const preferred=data.label?screen(...data.label):anchor;
+    item.offset={x:preferred.x-anchor.x,y:preferred.y-anchor.y};
+    item.visible=false;
+    if(type==='place'&&(!allowed(data)||(data.category==='transport'&&scale<.56)))continue;
     let chosen=null;
-    if(moving()){
-      if(item.offset){
-        const x=anchor.x+item.offset.x,y=anchor.y+item.offset.y,rect={x:x-w/2,y:y-h/2,w,h};
-        if(rect.x>=7&&rect.x+w<=width-7&&rect.y>=7&&rect.y+h<=height-7&&!occupied.some(other=>intersect(rect,other,2)))chosen={x,y,rect};
-      }
-    }else{
-      const candidates=[preferred,{x:anchor.x,y:anchor.y+23+h/2},{x:anchor.x+w/2+14,y:anchor.y},{x:anchor.x-w/2-14,y:anchor.y},{x:anchor.x,y:anchor.y-22-h/2},{x:preferred.x,y:preferred.y+32},{x:preferred.x,y:preferred.y-32},{x:anchor.x+w/2+22,y:anchor.y+25},{x:anchor.x-w/2-22,y:anchor.y+25}];
-      for(const candidate of candidates){
-        const rect={x:candidate.x-w/2,y:candidate.y-h/2,w,h};
-        if(rect.x<7||rect.x+w>width-7||rect.y<7||rect.y+h>height-7)continue;
-        if(!occupied.some(other=>intersect(rect,other,4))){chosen={...candidate,rect};break;}
-      }
-      if(!chosen&&(data.planned||type==='road'||type==='train'||isSelected)){
-        search:for(let radius=20;radius<=200;radius+=20){
-          for(const angle of [0,Math.PI/2,Math.PI,Math.PI*1.5,Math.PI/4,Math.PI*.75,Math.PI*1.25,Math.PI*1.75]){
-            const x=preferred.x+Math.cos(angle)*radius,y=preferred.y+Math.sin(angle)*radius,rect={x:x-w/2,y:y-h/2,w,h};
-            if(rect.x<7||rect.x+w>width-7||rect.y<7||rect.y+h>height-7)continue;
-            if(!occupied.some(other=>intersect(rect,other,4))){chosen={x,y,rect};break search;}
-          }
+    const candidates=[preferred,{x:anchor.x,y:anchor.y+23+h/2},{x:anchor.x+w/2+14,y:anchor.y},{x:anchor.x-w/2-14,y:anchor.y},{x:anchor.x,y:anchor.y-22-h/2},{x:preferred.x,y:preferred.y+32},{x:preferred.x,y:preferred.y-32},{x:anchor.x+w/2+22,y:anchor.y+25},{x:anchor.x-w/2-22,y:anchor.y+25}];
+    for(const candidate of candidates){
+      const rect={x:candidate.x-w/2,y:candidate.y-h/2,w,h};
+      if(rect.x<7||rect.x+w>width-7||rect.y<7||rect.y+h>height-7)continue;
+      if(!occupied.some(other=>intersect(rect,other,4))){chosen={...candidate,rect};break;}
+    }
+    if(!chosen&&(data.planned||type==='road'||type==='train')){
+      search:for(let radius=20;radius<=200;radius+=20){
+        for(const angle of [0,Math.PI/2,Math.PI,Math.PI*1.5,Math.PI/4,Math.PI*.75,Math.PI*1.25,Math.PI*1.75]){
+          const x=preferred.x+Math.cos(angle)*radius,y=preferred.y+Math.sin(angle)*radius,rect={x:x-w/2,y:y-h/2,w,h};
+          if(rect.x<7||rect.x+w>width-7||rect.y<7||rect.y+h>height-7)continue;
+          if(!occupied.some(other=>intersect(rect,other,4))){chosen={x,y,rect};break search;}
         }
       }
     }
-    if(!chosen){node.hidden=true;if(!moving())item.offset=null;continue;}
+    if(!chosen)continue;
     item.offset={x:chosen.x-anchor.x,y:chosen.y-anchor.y};
-    node.hidden=false;node.style.left=`${chosen.x}px`;node.style.top=`${chosen.y}px`;node.style.visibility='visible';occupied.push(chosen.rect);
-    if(Math.hypot(chosen.x-anchor.x,chosen.y-anchor.y)>18){
-      const endX=clamp(anchor.x,chosen.rect.x+3,chosen.rect.x+w-3),endY=clamp(anchor.y,chosen.rect.y+3,chosen.rect.y+h-3);
-      leaders.append(svg('line',{x1:anchor.x,y1:anchor.y,x2:endX,y2:endY,class:data.planned?'planned-leader':''}));
+    item.visible=true;occupied.push(chosen.rect);
+  }
+  labelLayoutDirty=false;labelVisibilityDirty=false;
+}
+function updateLabelVisibility(){
+  // Declutter only after camera motion has stopped. Existing labels get a
+  // smaller exclusion margin so tiny zoom reversals cannot toggle them rapidly.
+  const occupied=fixedObstacles();
+  const sorted=[...labelItems].sort((a,b)=>priority(b)-priority(a)||Number(b.visible)-Number(a.visible));
+  for(const item of sorted){
+    const {type,data,size,offset}=item,anchor=screen(data.x,data.y);
+    const selectedItem=selected?.data.id===data.id;
+    const station=type==='place'&&data.category==='transport';
+    const eligible=type!=='place'||(allowed(data)&&(!station||scale>=(item.visible?.50:.64)||selectedItem));
+    if(!eligible){item.visible=false;continue;}
+    const rect={x:anchor.x+offset.x-size.width/2,y:anchor.y+offset.y-size.height/2,w:size.width,h:size.height};
+    // Offscreen labels are naturally clipped; do not make them compete with
+    // names currently on screen or toggle them at the viewport boundary.
+    if(rect.x+rect.w<0||rect.x>width||rect.y+rect.h<0||rect.y>height){item.visible=true;continue;}
+    const padding=item.visible?2:10;
+    item.visible=!occupied.some(other=>intersect(rect,other,padding));
+    if(item.visible)occupied.push(rect);
+  }
+  labelVisibilityDirty=false;
+}
+function renderLabels(){
+  if(measureLabels())labelLayoutDirty=true;
+  if(labelLayoutDirty)placeLabels();
+  else if(labelVisibilityDirty&&!cameraActive&&!moving())updateLabelVisibility();
+  const pixel=value=>Math.round(value*devicePixelRatio)/devicePixelRatio;
+  for(const item of labelItems){
+    const {type,data,node,connector,line,dot,size,offset}=item;
+    const show=item.visible&&(type!=='place'||allowed(data));
+    if(node.hidden===show)node.hidden=!show;
+    connector.style.display=show?'':'none';
+    node.style.visibility='visible';node.classList.toggle('selected',selected?.data.id===data.id);
+    if(!show)continue;
+    const anchor=screen(data.x,data.y),x=pixel(anchor.x+offset.x),y=pixel(anchor.y+offset.y);
+    node.style.transform=`translate3d(${x}px,${y}px,0) translate(-50%,-50%)`;
+    const rect={x:x-size.width/2,y:y-size.height/2,w:size.width,h:size.height};
+    const connected=Math.hypot(offset.x,offset.y)>18;
+    line.style.display=connected?'':'none';
+    if(connected){
+      line.setAttribute('x1',anchor.x);line.setAttribute('y1',anchor.y);
+      line.setAttribute('x2',clamp(anchor.x,rect.x+3,rect.x+rect.w-3));
+      line.setAttribute('y2',clamp(anchor.y,rect.y+3,rect.y+rect.h-3));
     }
-    if(type==='place')leaders.append(svg('circle',{cx:anchor.x,cy:anchor.y,r:data.planned?4:2.5,fill:data.planned?'#bf5733':'#fff5df',stroke:'#fff4d8','stroke-width':1.5}));
+    if(dot){dot.setAttribute('cx',anchor.x);dot.setAttribute('cy',anchor.y);}
   }
 }
 function positionCard(){
@@ -504,14 +562,14 @@ function fitBounds(bounds){
   const area=mapViewport();scale=Math.min((area.w-20)/bounds.w,(area.h-32)/bounds.h);
   tx=area.x+area.w/2-(bounds.x+bounds.w/2)*scale;
   ty=area.y+area.h/2-(bounds.y+bounds.h/2)*scale;
-  clampCamera();overview=true;requestLayout();
+  clampCamera();overview=true;invalidateLabels();
 }
 function fitMap(){closeCard();fitBounds({x:0,y:0,w:MAP.width,h:MAP.height});}
 function fitRoute(){closeCard();fitBounds({x:375,y:228,w:870,h:630});}
 function minScale(){const area=mapViewport();return Math.min(area.w/MAP.width,area.h/MAP.height)*.85;}
 function zoom(factor,x=width/2,y=height/2){
   const next=clamp(scale*factor,minScale(),3.2),wx=(x-tx)/scale,wy=(y-ty)/scale;
-  scale=next;tx=x-wx*scale;ty=y-wy*scale;overview=false;clampCamera();requestLayout();
+  scale=next;tx=x-wx*scale;ty=y-wy*scale;overview=false;clampCamera();cameraMotion();requestLayout();
 }
 function focusPlace(place,visit=null){
   overview=false;openCard('place',place,visit);
@@ -530,7 +588,7 @@ $('zoom-in').addEventListener('click',()=>zoom(1.35));
 $('zoom-out').addEventListener('click',()=>zoom(1/1.35));
 $('fit-map').addEventListener('click',fitMap);$('fit-route').addEventListener('click',fitRoute);
 document.querySelectorAll('[data-view]').forEach(button=>button.addEventListener('click',()=>setView(button.dataset.view)));
-$('extra-category').addEventListener('change',event=>{category=event.target.value;closeCard();requestLayout();});
+$('extra-category').addEventListener('change',event=>{category=event.target.value;closeCard();labelVisibilityDirty=true;requestLayout();});
 
 atlas.addEventListener('wheel',event=>{
   if(event.target.closest(UI))return;
@@ -548,7 +606,7 @@ atlas.addEventListener('pointerdown',event=>{
     const [a,b]=[...pointers.values()],cx=(a.x+b.x)/2,cy=(a.y+b.y)/2;
     pinch={distance:Math.hypot(a.x-b.x,a.y-b.y),scale,wx:(cx-tx)/scale,wy:(cy-ty)/scale};
     if(drag)drag.moved=true;
-    closeCard();overview=false;atlas.classList.add('dragging');suppressClickUntil=performance.now()+400;
+    closeCard();overview=false;atlas.classList.add('dragging');cameraMotion();suppressClickUntil=performance.now()+400;
     // Touch pointers already have implicit capture to their initial target.
     if(event.pointerType!=='touch')for(const id of pointers.keys())atlas.setPointerCapture(id);
   }
@@ -560,13 +618,13 @@ window.addEventListener('pointermove',event=>{
     const [a,b]=[...pointers.values()],cx=(a.x+b.x)/2,cy=(a.y+b.y)/2;
     scale=clamp(pinch.scale*Math.hypot(a.x-b.x,a.y-b.y)/Math.max(1,pinch.distance),minScale(),3.2);
     tx=cx-pinch.wx*scale;ty=cy-pinch.wy*scale;clampCamera();
-    requestLayout();suppressClickUntil=performance.now()+400;return;
+    cameraMotion();requestLayout();suppressClickUntil=performance.now()+400;return;
   }
   if(!drag||drag.id!==event.pointerId)return;
   const dx=event.clientX-drag.x,dy=event.clientY-drag.y;
   if(!drag.moved&&Math.hypot(dx,dy)<7)return;
   if(!drag.moved){drag.moved=true;closeCard();overview=false;atlas.classList.add('dragging');if(event.pointerType!=='touch')atlas.setPointerCapture(event.pointerId);}
-  tx=drag.tx+dx;ty=drag.ty+dy;clampCamera();requestLayout();suppressClickUntil=performance.now()+400;
+  tx=drag.tx+dx;ty=drag.ty+dy;clampCamera();cameraMotion();requestLayout();suppressClickUntil=performance.now()+400;
 });
 function endPointer(event){
   if(!pointers.has(event.pointerId))return;
@@ -574,11 +632,11 @@ function endPointer(event){
   pointers.delete(event.pointerId);
   if(atlas.hasPointerCapture(event.pointerId))atlas.releasePointerCapture(event.pointerId);
   if(pointers.size<2)pinch=null;
-  if(!pointers.size){drag=null;atlas.classList.remove('dragging');requestLayout();}
+  if(!pointers.size){drag=null;atlas.classList.remove('dragging');cameraMotion();requestLayout();}
   else{const [id,p]=[...pointers.entries()][0];drag={id,x:p.x,y:p.y,tx,ty,moved:true};}
 }
 window.addEventListener('pointerup',endPointer);window.addEventListener('pointercancel',endPointer);
-window.addEventListener('blur',()=>{pointers.clear();drag=null;pinch=null;atlas.classList.remove('dragging');requestLayout();});
+window.addEventListener('blur',()=>{pointers.clear();drag=null;pinch=null;atlas.classList.remove('dragging');cameraMotion();requestLayout();});
 atlas.addEventListener('click',event=>{
   if(performance.now()<suppressClickUntil&&!event.target.closest(UI)){event.preventDefault();event.stopImmediatePropagation();return;}
   if(!event.target.closest('button,select,.place-card,.route-hit,.journey-strip,.explore-controls'))closeCard();
@@ -593,8 +651,12 @@ document.addEventListener('keydown',event=>{
 function resize(){
   const nextWidth=atlas.clientWidth,nextHeight=atlas.clientHeight;
   if(nextWidth===width&&nextHeight===height)return;
+  const widthChanged=nextWidth!==width;
   const wx=(width/2-tx)/scale,wy=(height/2-ty)/scale;
   width=nextWidth;height=nextHeight;
+  // Mobile browser chrome can change height during a gesture. Keep the label
+  // offsets in that case; an actual width/orientation change gets a new layout.
+  if(widthChanged)invalidateLabels();else labelVisibilityDirty=true;
   if(overview){if(view==='route')fitRoute();else fitMap();}
   else{tx=width/2-wx*scale;ty=height/2-wy*scale;clampCamera();requestLayout();}
 }
@@ -613,7 +675,7 @@ function openFromHash(id){
 if(initialId)openFromHash(initialId);
 window.addEventListener('hashchange',()=>openFromHash(location.hash.slice(1)));
 $('artwork').addEventListener('load',requestLayout);
-document.fonts.ready.then(()=>{for(const item of labelItems)item.sizeKey=null;requestLayout();});
+document.fonts.ready.then(()=>{for(const item of labelItems)item.sizeKey=null;invalidateLabels();});
 
 })();</script>
 </body>

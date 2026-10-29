@@ -29,6 +29,7 @@ button:focus-visible,select:focus-visible{outline:3px solid #d78140;outline-offs
 .figure-hotspot.selected{outline:2px solid #fff1ce;outline-offset:-3px;box-shadow:0 0 0 3px #bd5d3799}
 .place-label,.road-label,.rail-label{position:absolute;left:0;top:0;pointer-events:auto;border:1px solid #c8aa78;background:#fff8e9;box-shadow:0 2px 5px #3c2e2524;border-radius:7px;padding:6px 9px;white-space:nowrap;max-width:min(300px,85vw);font-size:var(--label-font);line-height:1.15;transform:translate(-50%,-50%);cursor:pointer;touch-action:none}
 .place-label{display:flex;align-items:center;gap:8px}
+.place-label,.road-label,.rail-label{will-change:transform;backface-visibility:hidden;transition:none}
 .place-label.planned{background:#173e30;color:#fff9e7;border:2px solid #fff4d5;min-height:46px;box-shadow:0 0 0 1px #173e30,0 3px 9px #17382c40;font-size:calc(var(--label-font) + 1px)}
 .label-copy{display:block;text-align:left}
 .label-subtitle{display:block;font-family:system-ui,sans-serif;font-size:10px;color:#6e604b;margin-top:3px;line-height:1.2}
